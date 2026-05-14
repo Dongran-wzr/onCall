@@ -227,60 +227,6 @@ curl -X POST "http://127.0.0.1:8000/v3/chat" ^
 }
 ```
 
-## 验证建议
-
-### Phase 1
-
-```bash
-curl "http://127.0.0.1:8000/v1/search?q=OOM"
-curl "http://127.0.0.1:8000/v1/search?q=故障"
-curl "http://127.0.0.1:8000/v1/search?q=replication"
-curl "http://127.0.0.1:8000/v1/search?q=CDN"
-curl "http://127.0.0.1:8000/v1/search?q=%26"
-```
-
-预期：
-
-- `OOM` 命中 `sop-001`
-- `故障` 返回多个文档
-- `replication` 返回空结果
-- `CDN` 返回 `sop-003`、`sop-010`
-- `%26` 返回正文包含 `&` 的文档
-
-### Phase 2
-
-```bash
-curl "http://127.0.0.1:8000/v2/search?q=服务器挂了"
-curl "http://127.0.0.1:8000/v2/search?q=黑客攻击"
-curl "http://127.0.0.1:8000/v2/search?q=机器学习模型出问题"
-```
-
-预期目标：
-
-- `服务器挂了`：`sop-001`、`sop-004` 靠前
-- `黑客攻击`：`sop-005` 明显靠前
-- `机器学习模型出问题`：`sop-008` 排在最前
-
-### Phase 3
-
-推荐在 `/v3` 页面直接测试，也可以用接口验证：
-
-```bash
-curl -X POST "http://127.0.0.1:8000/v3/chat" -H "Content-Type: application/json" -d "{\"message\":\"数据库主从延迟超过30秒怎么处理？\",\"stream\":false}"
-curl -X POST "http://127.0.0.1:8000/v3/chat" -H "Content-Type: application/json" -d "{\"message\":\"服务 OOM 了怎么办？\",\"stream\":false}"
-curl -X POST "http://127.0.0.1:8000/v3/chat" -H "Content-Type: application/json" -d "{\"message\":\"P0 故障的响应流程是什么？\",\"stream\":false}"
-curl -X POST "http://127.0.0.1:8000/v3/chat" -H "Content-Type: application/json" -d "{\"message\":\"怀疑有人入侵了系统\",\"stream\":false}"
-curl -X POST "http://127.0.0.1:8000/v3/chat" -H "Content-Type: application/json" -d "{\"message\":\"推荐结果质量下降了\",\"stream\":false}"
-```
-
-预期目标：
-
-- `数据库主从延迟超过30秒怎么处理？`：调用 `readFile("sop-002.html")`
-- `服务 OOM 了怎么办？`：调用 `readFile("sop-001.html")`
-- `P0 故障的响应流程是什么？`：读取多个相关 SOP 并综合回答
-- `怀疑有人入侵了系统`：调用 `readFile("sop-005.html")`
-- `推荐结果质量下降了`：调用 `readFile("sop-008.html")`
-
 ## 后续扩展建议
 
 当前结构已适合继续扩展：
