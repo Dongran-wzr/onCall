@@ -1,0 +1,36 @@
+# Python 虚拟环境目录
+.venv/
+venv/
+
+# 通用 Python 忽略文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sddist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 编辑器 / IDE 缓存
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db

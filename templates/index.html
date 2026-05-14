@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>On-Call 助手搜索</title>
+    <title>{{ page_title or "On-Call 助手搜索" }}</title>
     <style>
         :root {
             color-scheme: light;
@@ -101,10 +101,10 @@
 <body>
     <main class="page">
         <section class="hero">
-            <h1>On-Call 助手文档搜索</h1>
-            <p class="subtitle">搜索已加载的 SOP 文档，支持中文、英文以及特殊字符查询。</p>
+            <h1>{{ page_heading or "On-Call 助手文档搜索" }}</h1>
+            <p class="subtitle">{{ page_description or "搜索已加载的 SOP 文档，支持中文、英文以及特殊字符查询。" }}</p>
             <form id="search-form" class="search-bar">
-                <input id="query" type="search" placeholder="输入关键词，例如：故障 / OOM / CDN / &" autocomplete="off">
+                <input id="query" type="search" placeholder="{{ search_placeholder or '输入关键词，例如：故障 / OOM / CDN / &' }}" autocomplete="off">
                 <button type="submit">搜索</button>
             </form>
             <div class="meta">当前已加载 {{ document_count }} 份文档。</div>
@@ -133,7 +133,7 @@
                     <div class="doc-id">${item.id}</div>
                     <h2>${item.title}</h2>
                     <p class="snippet">${item.snippet || ""}</p>
-                    <div class="score">相关度分数: ${item.score}</div>
+                    <div class="score">{{ score_label or "相关度分数" }}: ${item.score}</div>
                 `;
                 resultsEl.appendChild(card);
             }
@@ -141,7 +141,7 @@
 
         async function runSearch() {
             const query = queryInput.value;
-            const response = await fetch(`/v1/search?q=${encodeURIComponent(query)}`);
+            const response = await fetch(`{{ api_path or '/v1/search' }}?q=${encodeURIComponent(query)}`);
             const data = await response.json();
             renderResults(data);
         }

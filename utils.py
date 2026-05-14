@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 
 
 WHITESPACE_RE = re.compile(r"\s+")
+SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?；;])\s*")
 
 
 @dataclass(slots=True)
@@ -17,6 +18,7 @@ class DocumentRecord:
     title: str
     clean_text: str
     original_html: str | None = None
+    segments: tuple[str, ...] = ()
 
 
 def normalize_whitespace(text: str) -> str:
@@ -39,13 +41,61 @@ def extract_title(soup: BeautifulSoup, document_id: str) -> str:
     return f"Document {document_id}"
 
 
-def html_to_document(document_id: str, html: str, keep_original_html: bool = True) -> DocumentRecord:
-    soup = BeautifulSoup(html, "html.parser")
-    title = extract_title(soup, document_id)
-
+def extract_visible_segments(soup: BeautifulSoup) -> list[str]:
     for tag in soup(["script", "style"]):
         tag.decompose()
 
+    root = soup.body if soup.body else soup
+    segments: list[str] = []
+    seen: set[str] = set()
+
+    for element in root.find_all(["h1", "h2", "h3", "p", "li"]):
+        text = normalize_whitespace(element.get_text(" ", strip=True))
+        if not text or len(text) < 4:
+            continue
+        if text in seen:
+            continue
+        seen.add(text)
+        segments.append(text)
+
+    if segments:
+        return segments
+
+    fallback_text = normalize_whitespace(root.get_text(" ", strip=True))
+    return split_text_into_segments(fallback_text)
+
+
+def split_text_into_segments(text: str, max_length: int = 220) -> list[str]:
+    normalized_text = normalize_whitespace(text)
+    if not normalized_text:
+        return []
+
+    sentences = [part.strip() for part in SENTENCE_SPLIT_RE.split(normalized_text) if part.strip()]
+    if not sentences:
+        return [normalized_text[:max_length]]
+
+    segments: list[str] = []
+    current = ""
+    for sentence in sentences:
+        candidate = sentence if not current else f"{current} {sentence}"
+        if len(candidate) <= max_length:
+            current = candidate
+            continue
+
+        if current:
+            segments.append(current)
+        current = sentence
+
+    if current:
+        segments.append(current)
+
+    return segments
+
+
+def html_to_document(document_id: str, html: str, keep_original_html: bool = True) -> DocumentRecord:
+    soup = BeautifulSoup(html, "html.parser")
+    title = extract_title(soup, document_id)
+    segments = extract_visible_segments(soup)
     visible_root = soup.body if soup.body else soup
     clean_text = normalize_whitespace(visible_root.get_text(" ", strip=True))
 
@@ -54,6 +104,7 @@ def html_to_document(document_id: str, html: str, keep_original_html: bool = Tru
         title=title,
         clean_text=clean_text,
         original_html=html if keep_original_html else None,
+        segments=tuple(segments),
     )
 
 
@@ -106,6 +157,13 @@ def build_snippet(text: str, query: str, max_length: int = 130) -> str:
             snippet = f"{snippet}..."
 
     return snippet
+
+
+def truncate_text(text: str, max_length: int = 220) -> str:
+    normalized_text = normalize_whitespace(text)
+    if len(normalized_text) <= max_length:
+        return normalized_text
+    return f"{normalized_text[:max_length].rstrip()}..."
 
 
 def iter_html_files(data_dir: Path) -> Iterable[Path]:
