@@ -226,11 +226,3 @@ curl -X POST "http://127.0.0.1:8000/v3/chat" ^
   ]
 }
 ```
-
-## 后续扩展建议
-
-当前结构已适合继续扩展：
-
-- 在 `semantic_search.py` 中引入 chunk 级召回
-- 在 Phase 3 中增加更细粒度的 chunk 级 ReAct 检索
-- 在语义召回后加入交叉编码器或 LLM 重排序
