@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import logging
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from semantic_search import MAX_RESULTS, SemanticResult, SemanticSearchEngine
+from agent import OnCallAgent, to_sse
+from semantic_search import MAX_RESULTS, SemanticSearchEngine
 from utils import DocumentRecord, build_snippet, count_keyword_occurrences, html_to_document, iter_html_files
 
 
@@ -56,6 +59,22 @@ class SemanticSearchResponse(BaseModel):
     query: str
     total: int
     results: list[SemanticSearchResult]
+
+
+class ChatHistoryMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1)
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(..., min_length=1)
+    history: list[ChatHistoryMessage] = Field(default_factory=list)
+    stream: bool = True
+
+
+class ChatResponse(BaseModel):
+    answer: str
+    events: list[dict[str, Any]]
 
 
 class DocumentStore:
@@ -116,6 +135,67 @@ class DocumentStore:
 
 document_store = DocumentStore()
 semantic_engine = SemanticSearchEngine()
+agent: OnCallAgent | None = None
+
+
+def list_document_manifest() -> list[dict[str, str]]:
+    return [
+        {
+            "fname": f"{document.id}.html",
+            "title": document.title,
+        }
+        for document in sorted(document_store.all_documents(), key=lambda item: item.id)
+    ]
+
+
+def suggest_agent_files(query: str) -> list[dict[str, str]]:
+    suggestions: list[dict[str, str]] = []
+
+    try:
+        if semantic_engine.ready:
+            semantic_results = semantic_engine.search(query, top_k=3, min_score=0.2)
+            for item in semantic_results:
+                suggestions.append({"fname": f"{item.id}.html", "title": item.title})
+    except Exception:
+        logger.exception("Failed to build semantic suggestions for agent query=%r", query)
+
+    lowered = query.casefold()
+    keyword_map = {
+        "数据库": "sop-002.html",
+        "主从": "sop-002.html",
+        "延迟": "sop-002.html",
+        "oom": "sop-001.html",
+        "服务": "sop-001.html",
+        "p0": "sop-004.html",
+        "入侵": "sop-005.html",
+        "黑客": "sop-005.html",
+        "安全": "sop-005.html",
+        "推荐": "sop-008.html",
+        "模型": "sop-008.html",
+        "质量": "sop-008.html",
+    }
+    manifest_by_name = {item["fname"]: item for item in list_document_manifest()}
+    for token, fname in keyword_map.items():
+        if token in lowered and fname in manifest_by_name:
+            suggestions.append(manifest_by_name[fname])
+
+    unique: dict[str, dict[str, str]] = {}
+    for item in suggestions:
+        unique[item["fname"]] = item
+    return list(unique.values())[:4]
+
+
+def handle_agent_file_write(path: Path) -> None:
+    if path.suffix.lower() != ".html":
+        logger.info("Agent created non-html file %s, skipping index rebuild", path.name)
+        return
+
+    document = html_to_document(document_id=path.stem, html=path.read_text(encoding="utf-8"), keep_original_html=True)
+    document_store.upsert_document(document)
+    try:
+        semantic_engine.rebuild_index(document_store.all_documents())
+    except Exception:
+        logger.exception("Semantic index rebuild failed after agent file write: %s", path.name)
 
 
 @asynccontextmanager
@@ -125,11 +205,24 @@ async def lifespan(_: FastAPI):
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
     loaded = document_store.load_from_directory(DATA_DIR)
-    try:
-        semantic_engine.rebuild_index(document_store.all_documents())
-        logger.info("Semantic search engine initialized successfully")
-    except Exception:
-        logger.exception("Semantic search engine failed to initialize")
+
+    def _init_semantic_engine() -> None:
+        try:
+            semantic_engine.rebuild_index(document_store.all_documents())
+            logger.info("Semantic search engine initialized successfully")
+        except Exception:
+            logger.exception("Semantic search engine failed to initialize")
+
+    threading.Thread(target=_init_semantic_engine, daemon=True, name="semantic-init").start()
+
+    global agent
+    agent = OnCallAgent(
+        data_dir=DATA_DIR,
+        list_documents=list_document_manifest,
+        suggest_files=suggest_agent_files,
+        on_file_write=handle_agent_file_write,
+    )
+    logger.info("On-Call agent initialized successfully")
     logger.info("Application startup complete, loaded %s document(s)", loaded)
     yield
 
@@ -151,7 +244,7 @@ app.add_middleware(
 
 @app.get("/", include_in_schema=False)
 async def root():
-    return RedirectResponse(url="/v2")
+    return RedirectResponse(url="/v3")
 
 
 @app.get("/v1", response_class=HTMLResponse)
@@ -185,6 +278,15 @@ async def semantic_home(request: Request) -> HTMLResponse:
             "search_placeholder": "输入自然语言，例如：服务器挂了 / 黑客攻击 / 机器学习模型出问题",
             "score_label": "语义相似度",
         },
+    )
+
+
+@app.get("/v3", response_class=HTMLResponse)
+async def agent_home(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="chat.html",
+        context={},
     )
 
 
@@ -240,6 +342,36 @@ async def semantic_search_documents(q: str = Query(default="", description="Natu
     ]
     logger.info("Semantic search executed, query=%r, matched=%s", q, len(response_results))
     return SemanticSearchResponse(query=q, total=len(response_results), results=response_results)
+
+
+@app.post("/v3/chat", response_model=ChatResponse)
+async def agent_chat(payload: ChatRequest):
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Agent is not initialized")
+
+    history = [{"role": item.role, "content": item.content} for item in payload.history]
+
+    try:
+        events = agent.run(message=payload.message, history=history)
+    except Exception as exc:
+        logger.exception("Agent execution failed")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+    if payload.stream:
+        def event_generator():
+            for event in events:
+                yield to_sse([event])
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    final_answer = ""
+    serialized_events: list[dict[str, Any]] = []
+    for event in events:
+        serialized_events.append({"type": event.type, "payload": event.payload})
+        if event.type == "final":
+            final_answer = str(event.payload.get("answer", ""))
+
+    return ChatResponse(answer=final_answer, events=serialized_events)
 
 
 @app.get("/health")

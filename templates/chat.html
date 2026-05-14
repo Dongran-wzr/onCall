@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>On-Call 助手 Agent</title>
+    <style>
+        :root {
+            color-scheme: light;
+            font-family: Arial, "Microsoft YaHei", sans-serif;
+        }
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            margin: 0;
+            background: #f5f7fb;
+            color: #111827;
+        }
+        .page {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 24px 18px 32px;
+        }
+        .header {
+            background: #ffffff;
+            border-radius: 16px;
+            padding: 20px 22px;
+            box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+        }
+        .header h1 {
+            margin: 0 0 8px;
+            font-size: 28px;
+        }
+        .header p {
+            margin: 0;
+            color: #4b5563;
+            line-height: 1.7;
+        }
+        .layout {
+            margin-top: 20px;
+            display: grid;
+            grid-template-columns: 1.5fr 1fr;
+            gap: 18px;
+        }
+        .panel {
+            background: #ffffff;
+            border-radius: 16px;
+            box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+            min-height: 640px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .panel-header {
+            padding: 16px 18px;
+            border-bottom: 1px solid #e5e7eb;
+            font-weight: 700;
+        }
+        .messages,
+        .activity {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .message {
+            border-radius: 14px;
+            padding: 14px 16px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+        }
+        .message.user {
+            background: #dbeafe;
+            align-self: flex-end;
+            max-width: 85%;
+        }
+        .message.assistant {
+            background: #f3f4f6;
+            max-width: 92%;
+        }
+        .message-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: #2563eb;
+            margin-bottom: 6px;
+        }
+        .activity-item {
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 12px 14px;
+            background: #f9fafb;
+        }
+        .activity-kind {
+            font-size: 12px;
+            font-weight: 700;
+            color: #2563eb;
+            margin-bottom: 6px;
+        }
+        .composer {
+            border-top: 1px solid #e5e7eb;
+            padding: 16px 18px;
+            display: flex;
+            gap: 10px;
+        }
+        textarea {
+            flex: 1;
+            resize: vertical;
+            min-height: 72px;
+            max-height: 180px;
+            padding: 12px 14px;
+            border: 1px solid #cbd5e1;
+            border-radius: 12px;
+            font: inherit;
+        }
+        button {
+            width: 108px;
+            border: none;
+            border-radius: 12px;
+            background: #2563eb;
+            color: #ffffff;
+            font: inherit;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .hint {
+            padding: 0 18px 16px;
+            color: #6b7280;
+            font-size: 13px;
+        }
+        @media (max-width: 980px) {
+            .layout {
+                grid-template-columns: 1fr;
+            }
+            .panel {
+                min-height: 420px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <main class="page">
+        <section class="header">
+            <h1>On-Call 助手 Agent</h1>
+            <p>通过自然对话让 Agent 阅读真实 SOP 文件并给出处理建议。右侧会展示 reasoning、工具调用和工具结果。</p>
+        </section>
+
+        <section class="layout">
+            <section class="panel">
+                <div class="panel-header">对话</div>
+                <div id="messages" class="messages"></div>
+                <div class="hint">示例：数据库主从延迟超过30秒怎么处理？ / 服务 OOM 了怎么办？ / P0 故障的响应流程是什么？</div>
+                <form id="composer" class="composer">
+                    <textarea id="messageInput" placeholder="输入你的值班问题..." required></textarea>
+                    <button id="sendButton" type="submit">发送</button>
+                </form>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">Agent 活动</div>
+                <div id="activity" class="activity"></div>
+            </section>
+        </section>
+    </main>
+
+    <script>
+        const composer = document.getElementById("composer");
+        const messageInput = document.getElementById("messageInput");
+        const sendButton = document.getElementById("sendButton");
+        const messagesEl = document.getElementById("messages");
+        const activityEl = document.getElementById("activity");
+        const history = [];
+
+        function appendMessage(role, content) {
+            const wrapper = document.createElement("article");
+            wrapper.className = `message ${role}`;
+
+            const title = document.createElement("div");
+            title.className = "message-title";
+            title.textContent = role === "user" ? "用户" : "Agent";
+
+            const body = document.createElement("div");
+            body.textContent = content;
+
+            wrapper.appendChild(title);
+            wrapper.appendChild(body);
+            messagesEl.appendChild(wrapper);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+            return body;
+        }
+
+        function appendActivity(kind, content) {
+            const item = document.createElement("article");
+            item.className = "activity-item";
+
+            const title = document.createElement("div");
+            title.className = "activity-kind";
+            title.textContent = kind;
+
+            const body = document.createElement("div");
+            body.innerHTML = toDisplayHTML(content); // Use toDisplayHTML for content
+
+            item.appendChild(title);
+            item.appendChild(body);
+            activityEl.appendChild(item);
+            activityEl.scrollTop = activityEl.scrollHeight;
+        }
+
+        function toDisplayHTML(text) {
+            return text.replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
+        }
+
+        function setPending(pending) {
+            sendButton.disabled = pending;
+            messageInput.disabled = pending;
+        }
+
+        function parseSseBlocks(buffer) {
+            const blocks = buffer.split("\n\n");
+            return {
+                complete: blocks.slice(0, -1),
+                rest: blocks[blocks.length - 1]
+            };
+        }
+
+        function handleEvent(eventName, data, assistantBody) {
+            try {
+                if (eventName === "thought") {
+                    appendActivity("思考", data.message || "");
+                    return;
+                }
+                if (eventName === "status") {
+                    appendActivity("状态", data.message || "");
+                    return;
+                }
+                if (eventName === "retrieval") {
+                    const candidates = (data.candidates || []).map(item => `${item.fname} (${item.title})`).join("；");
+                    appendActivity("候选 SOP", `${data.message || ""}${candidates ? " " + candidates : ""}`);
+                    return;
+                }
+                if (eventName === "tool_call") {
+                    appendActivity("工具调用", `readFile(${data.fname})`);
+                    return;
+                }
+                if (eventName === "tool_result") {
+                    appendActivity("工具结果", data.summary || "");
+                    return;
+                }
+                if (eventName === "final") {
+                    assistantBody.textContent = data.answer || "";
+                    history.push({ role: "assistant", content: data.answer || "" });
+                    appendActivity("分析完成", data.answer || "");
+                    return;
+                }
+                if (eventName === "error") {
+                    appendActivity("错误", data.message || "Unknown error");
+                    return;
+                }
+            } catch (err) {
+                appendActivity("解析错误", err.message);
+            }
+        }
+
+        async function sendMessage(message) {
+            appendMessage("user", message);
+            history.push({ role: "user", content: message });
+            const assistantBody = appendMessage("assistant", "正在分析中...");
+            activityEl.innerHTML = "";
+            setPending(true);
+
+            try {
+                const response = await fetch("/v3/chat", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        message,
+                        history,
+                        stream: true
+                    })
+                });
+
+                if (!response.ok || !response.body) {
+                    const errorText = await response.text();
+                    throw new Error(errorText || `HTTP ${response.status}`);
+                }
+
+                const reader = response.body.getReader();
+                let buffer = "";
+                let dataBuffer = "";
+                let eventName = "message";
+                let finalReceived = false;
+                const timeoutMs = 180000;
+
+                const timeoutId = setTimeout(() => {
+                    if (!finalReceived) {
+                        reader.cancel().catch(() => {});
+                        appendActivity("超时", "请求处理超时（3分钟）");
+                        assistantBody.textContent = "请求处理超时，请重试。";
+                    }
+                }, timeoutMs);
+
+                try {
+                    const textDecoder = new TextDecoder("utf-8");
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) {
+                            break;
+                        }
+
+                        buffer += textDecoder.decode(value, { stream: true });
+
+                        while (true) {
+                            const newlineIndex = buffer.indexOf("\n");
+                            if (newlineIndex === -1) break;
+                            const line = buffer.slice(0, newlineIndex).replace(/\r$/, "");
+                            buffer = buffer.slice(newlineIndex + 1);
+
+                            if (line === "") {
+                                if (dataBuffer) {
+                                    try {
+                                        const payload = JSON.parse(dataBuffer);
+                                        handleEvent(eventName, payload, assistantBody);
+                                        if (eventName === "final") {
+                                            finalReceived = true;
+                                        }
+                                    } catch (parseErr) {
+                                        const preview = dataBuffer.length > 80 ? dataBuffer.slice(0, 80) + "..." : dataBuffer;
+                                        appendActivity("解析错误", `${parseErr.message}\n原始数据: ${preview}`);
+                                    }
+                                    dataBuffer = "";
+                                    eventName = "message";
+                                }
+                                continue;
+                            }
+
+                            if (line.startsWith("event:")) {
+                                eventName = line.slice(6).trim();
+                            } else if (line.startsWith("data:")) {
+                                const dataContent = line.slice(5);
+                                if (dataBuffer) {
+                                    dataBuffer += "\n" + dataContent;
+                                } else {
+                                    dataBuffer = dataContent;
+                                }
+                            }
+                        }
+                    }
+
+                    if (dataBuffer.trim()) {
+                        try {
+                            const payload = JSON.parse(dataBuffer);
+                            handleEvent(eventName, payload, assistantBody);
+                            if (eventName === "final") {
+                                finalReceived = true;
+                            }
+                        } catch (parseErr) {
+                            const preview = dataBuffer.length > 80 ? dataBuffer.slice(0, 80) + "..." : dataBuffer;
+                            appendActivity("解析错误", `${parseErr.message}\n原始数据: ${preview}`);
+                        }
+                    }
+                } catch (err) {
+                    appendActivity("读取错误", err.message);
+                } finally {
+                    clearTimeout(timeoutId);
+                    if (!finalReceived) {
+                        appendActivity("注意", "流结束但未收到 final 事件");
+                    }
+                }
+            } catch (error) {
+                assistantBody.textContent = `请求失败：${error.message}`;
+                appendActivity("错误", error.message);
+            } finally {
+                setPending(false);
+                messageInput.focus();
+            }
+        }
+
+        composer.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            const message = messageInput.value.trim();
+            if (!message) {
+                return;
+            }
+            messageInput.value = "";
+            messageInput.rows = 1;
+            await sendMessage(message);
+        });
+    </script>
+</body>
+</html>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 
 import torch
@@ -53,6 +54,7 @@ class SemanticSearchEngine:
             return
 
         logger.info("Loading semantic model: %s", self.model_name)
+        os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "15")
         self.model = SentenceTransformer(self.model_name)
         self.ready = True
         logger.info("Semantic model loaded successfully")
